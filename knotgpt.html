@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>KnotGPT — traced vector splash</title>
+
+<style>
+  :root {
+    --ink:#17111c;
+    --muted:#72527f;
+  }
+
+  * { box-sizing:border-box; }
+
+  html, body {
+    width:100%;
+    min-height:100%;
+    margin:0;
+  }
+
+  body {
+    min-height:100svh;
+    overflow:hidden;
+    font-family:Inter, ui-sans-serif, system-ui, -apple-system,
+                BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:#eed4fb;
+  }
+
+  .splash {
+    position:relative;
+    min-height:100svh;
+    display:grid;
+    place-items:center;
+    overflow:hidden;
+    isolation:isolate;
+
+    background:
+      radial-gradient(circle at 50% 39%,
+        rgba(255,255,255,.92) 0 7%,
+        rgba(255,255,255,.45) 25%,
+        transparent 52%),
+      linear-gradient(145deg,
+        #fbf2ff 0%,
+        #efd8fb 48%,
+        #d9b0f5 100%);
+  }
+
+  .splash::before,
+  .splash::after {
+    content:"";
+    position:absolute;
+    width:62vmax;
+    aspect-ratio:1;
+    border:clamp(28px,5.6vw,84px) solid rgba(123,22,163,.095);
+    border-radius:31%;
+    transform:rotate(31deg);
+    z-index:-1;
+  }
+
+  .splash::before {
+    top:-32vmax;
+    left:-30vmax;
+  }
+
+  .splash::after {
+    right:-33vmax;
+    bottom:-33vmax;
+  }
+
+  .stage {
+    width:min(92vw, 620px);
+    display:grid;
+    justify-items:center;
+    gap:clamp(8px,1.6vh,18px);
+    transform:translateY(-2vh);
+  }
+
+  .logo-shell {
+    width:min(92vw, 570px);
+    filter:drop-shadow(0 22px 28px rgba(96,35,119,.20));
+    animation:
+      logo-in 1200ms cubic-bezier(.16,.88,.22,1) both,
+      idle-float 4.5s 1500ms ease-in-out infinite;
+  }
+
+  .logo {
+    display:block;
+    width:100%;
+    overflow:visible;
+  }
+
+  .logo #knot,
+  .logo #leftHand,
+  .logo #rightHand {
+    transform-box:fill-box;
+    transform-origin:center;
+  }
+
+  .logo #knot {
+    animation:
+      knot-settle 1200ms 100ms cubic-bezier(.18,.8,.18,1) both;
+  }
+
+  .logo #leftHand {
+    animation:
+      left-hug 980ms 360ms cubic-bezier(.18,.92,.22,1.12) both;
+  }
+
+  .logo #rightHand {
+    animation:
+      right-hug 980ms 360ms cubic-bezier(.18,.92,.22,1.12) both;
+  }
+
+  .logo .finger {
+    transform-box:fill-box;
+    transform-origin:center;
+  }
+
+  .logo .left-top,
+  .logo .right-top {
+    animation:finger-settle 720ms 610ms ease-out both;
+  }
+
+  .logo .left-middle,
+  .logo .right-middle {
+    animation:finger-settle 720ms 690ms ease-out both;
+  }
+
+  .logo .left-bottom,
+  .logo .right-bottom {
+    animation:finger-settle 720ms 770ms ease-out both;
+  }
+
+  .wordmark {
+    color:var(--ink);
+    font-size:clamp(48px,11vw,82px);
+    font-weight:900;
+    line-height:.9;
+    letter-spacing:-.055em;
+    opacity:0;
+    transform:translateY(14px);
+    animation:text-in 650ms 1000ms ease-out forwards;
+  }
+
+  .wordmark sup {
+    font-size:.27em;
+    vertical-align:top;
+    margin-left:.08em;
+    letter-spacing:0;
+  }
+
+  .tagline {
+    margin:.6rem 0 0;
+    color:var(--muted);
+    font-size:clamp(15px,3.8vw,21px);
+    font-weight:650;
+    letter-spacing:.035em;
+    opacity:0;
+    transform:translateY(8px);
+    animation:text-in 650ms 1160ms ease-out forwards;
+  }
+
+  .spark {
+    position:absolute;
+    width:11px;
+    height:11px;
+    background:rgba(255,255,255,.88);
+    border-radius:2px;
+    transform:rotate(45deg) scale(0);
+    animation:twinkle 3.4s ease-in-out infinite;
+  }
+
+  .spark.one { left:19%; top:27%; animation-delay:1.25s; }
+  .spark.two { right:17%; top:34%; animation-delay:1.9s; }
+  .spark.three { left:27%; bottom:21%; animation-delay:2.45s; }
+
+  .install-button {
+    appearance:none;
+    border:0;
+    border-radius:999px;
+    padding:12px 20px;
+    margin-top:.35rem;
+    background:linear-gradient(135deg, #9d19d2, #72109b);
+    color:#fff;
+    font:800 15px/1 system-ui, sans-serif;
+    letter-spacing:.01em;
+    box-shadow:0 10px 24px rgba(111,22,148,.22);
+    cursor:pointer;
+    opacity:0;
+    transform:translateY(8px);
+    animation:install-in 500ms 1320ms ease-out forwards;
+  }
+
+  .install-button[hidden] {
+    display:none;
+  }
+
+  .install-button:active {
+    transform:translateY(1px) scale(.985);
+  }
+
+  .replay {
+    position:fixed;
+    right:max(16px, env(safe-area-inset-right));
+    bottom:max(16px, env(safe-area-inset-bottom));
+    z-index:5;
+    appearance:none;
+    border:0;
+    border-radius:999px;
+    padding:11px 17px;
+    background:rgba(30,17,32,.80);
+    color:white;
+    font:750 14px/1 system-ui,sans-serif;
+    backdrop-filter:blur(14px);
+    box-shadow:0 6px 18px rgba(32,12,38,.16);
+    cursor:pointer;
+  }
+
+  @keyframes logo-in {
+    0%   { opacity:0; transform:scale(.80) translateY(30px); }
+    62%  { opacity:1; transform:scale(1.025) translateY(-3px); }
+    100% { opacity:1; transform:scale(1) translateY(0); }
+  }
+
+  @keyframes knot-settle {
+    0%   { transform:rotate(-7deg) scale(.93); }
+    72%  { transform:rotate(1.2deg) scale(1.012); }
+    100% { transform:rotate(0) scale(1); }
+  }
+
+  @keyframes left-hug {
+    0%   { opacity:.15; transform:translateX(-92px) rotate(-8deg); }
+    72%  { opacity:1; transform:translateX(7px) rotate(1.5deg); }
+    100% { opacity:1; transform:translateX(0) rotate(0); }
+  }
+
+  @keyframes right-hug {
+    0%   { opacity:.15; transform:translateX(92px) rotate(8deg); }
+    72%  { opacity:1; transform:translateX(-7px) rotate(-1.5deg); }
+    100% { opacity:1; transform:translateX(0) rotate(0); }
+  }
+
+  @keyframes finger-settle {
+    0%   { transform:scale(.94); }
+    60%  { transform:scale(1.025); }
+    100% { transform:scale(1); }
+  }
+
+  @keyframes text-in {
+    to { opacity:1; transform:translateY(0); }
+  }
+
+  @keyframes idle-float {
+    0%,100% { transform:translateY(0); }
+    50%     { transform:translateY(-8px); }
+  }
+
+  @keyframes twinkle {
+    0%,18%,100% { opacity:0; transform:rotate(45deg) scale(0); }
+    38%,55%     { opacity:.9; transform:rotate(45deg) scale(1); }
+    72%         { opacity:0; transform:rotate(45deg) scale(.25); }
+  }
+
+  @keyframes install-in {
+    to {
+      opacity:1;
+      transform:translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion:reduce) {
+    *, *::before, *::after {
+      animation-duration:.001ms !important;
+      animation-iteration-count:1 !important;
+      scroll-behavior:auto !important;
+    }
+  }
+</style>
+</head>
+
+<body>
+<main class="splash">
+  <i class="spark one"></i>
+  <i class="spark two"></i>
+  <i class="spark three"></i>
+
+  <section class="stage" id="stage" aria-label="KnotGPT splash animation">
+    <div class="logo-shell">
+      <svg class="logo"
+           viewBox="0 0 1030 780"
+           role="img"
+           aria-labelledby="logoTitle logoDesc">
+        <title id="logoTitle">KnotGPT</title>
+        <desc id="logoDesc">
+          Purple interwoven knot held by three fingers on each side.
+        </desc>
+
+        
+<defs>
+  <linearGradient id="knotGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#9200ad"/>
+    <stop offset="52%" stop-color="#7e0098"/>
+    <stop offset="100%" stop-color="#69007e"/>
+  </linearGradient>
+
+  <linearGradient id="skinGradient" x1="8%" y1="0%" x2="92%" y2="100%">
+    <stop offset="0%" stop-color="#ffd28e"/>
+    <stop offset="100%" stop-color="#f9b86f"/>
+  </linearGradient>
+
+  <linearGradient id="tileGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#f7ddff"/>
+    <stop offset="52%" stop-color="#efc9fb"/>
+    <stop offset="100%" stop-color="#e4baf6"/>
+  </linearGradient>
+
+  <filter id="logoShadow" x="-25%" y="-25%" width="150%" height="160%">
+    <feDropShadow dx="0" dy="18" stdDeviation="20"
+                  flood-color="#64247f" flood-opacity=".22"/>
+  </filter>
+
+  <filter id="tileShadow" x="-20%" y="-20%" width="140%" height="150%">
+    <feDropShadow dx="0" dy="18" stdDeviation="25"
+                  flood-color="#7f5c88" flood-opacity=".18"/>
+  </filter>
+</defs>
+
+
+        
+<g id="knot">
+  <path d="M 704,419 L 713,425 L 714,423 L 717,423 Z M 894,404 L 889,406 L 852,413 L 853,415 L 861,415 L 876,411 L 894,410 Z M 134,404 L 134,411 L 136,410 L 155,411 L 176,415 L 176,412 L 157,408 L 150,408 Z M 849,304 L 840,294 L 815,311 L 799,320 L 800,322 L 819,317 L 822,315 L 836,311 L 849,305 Z M 166,274 L 159,284 L 158,288 L 156,289 L 176,301 L 196,309 L 203,300 L 196,294 L 174,280 L 169,275 Z M 413,44 L 390,52 L 371,61 L 342,80 L 330,90 L 312,108 L 298,126 L 286,145 L 274,171 L 265,201 L 285,223 L 308,243 L 310,242 L 310,227 L 315,200 L 324,177 L 332,162 L 344,145 L 363,125 L 374,116 L 391,105 L 410,96 L 431,89 L 448,86 L 466,85 L 467,86 L 482,86 L 501,90 L 513,95 L 516,95 L 518,97 L 532,103 L 543,112 L 533,119 L 526,122 L 521,126 L 507,133 L 478,151 L 471,154 L 384,205 L 378,211 L 376,216 L 376,432 L 375,434 L 373,435 L 337,415 L 330,416 L 327,418 L 312,422 L 303,422 L 295,424 L 277,424 L 276,425 L 274,424 L 275,426 L 316,425 L 329,430 L 337,438 L 341,446 L 341,454 L 342,455 L 341,456 L 342,457 L 340,463 L 381,485 L 450,525 L 452,525 L 464,533 L 461,536 L 451,541 L 448,544 L 443,546 L 399,573 L 394,574 L 285,508 L 274,512 L 249,516 L 233,516 L 228,514 L 215,513 L 207,518 L 201,514 L 194,523 L 190,533 L 189,548 L 184,557 L 185,574 L 188,588 L 195,610 L 208,637 L 220,655 L 230,667 L 247,684 L 262,696 L 286,711 L 301,718 L 332,728 L 358,732 L 405,731 L 421,728 L 433,724 L 438,724 L 458,743 L 480,757 L 502,767 L 535,776 L 551,777 L 552,778 L 583,778 L 619,772 L 640,765 L 665,753 L 680,744 L 703,726 L 724,703 L 739,680 L 751,653 L 756,633 L 758,631 L 764,630 L 782,623 L 810,606 L 834,584 L 845,571 L 853,557 L 851,558 L 847,555 L 843,546 L 839,542 L 839,540 L 820,521 L 821,523 L 803,550 L 782,570 L 770,578 L 760,582 L 759,581 L 759,514 L 737,508 L 717,498 L 717,506 L 716,507 L 717,510 L 717,592 L 716,593 L 716,606 L 713,623 L 705,646 L 697,661 L 685,678 L 671,693 L 649,710 L 633,719 L 605,729 L 582,733 L 557,733 L 529,728 L 515,723 L 491,710 L 485,705 L 489,701 L 513,689 L 558,663 L 640,619 L 645,615 L 649,605 L 649,390 L 651,389 L 675,402 L 668,389 L 667,377 L 670,368 L 678,358 L 677,356 L 659,347 L 638,334 L 559,291 L 558,288 L 626,249 L 632,250 L 678,277 L 681,277 L 694,266 L 721,247 L 645,203 L 634,198 L 623,198 L 614,202 L 600,211 L 591,215 L 570,228 L 536,246 L 522,255 L 424,310 L 423,309 L 423,240 L 450,223 L 452,223 L 467,213 L 474,210 L 574,151 L 594,142 L 624,133 L 643,130 L 667,130 L 691,134 L 709,140 L 730,151 L 746,163 L 764,181 L 772,191 L 775,197 L 778,192 L 788,182 L 794,173 L 808,157 L 801,148 L 781,128 L 764,115 L 734,98 L 715,91 L 700,87 L 681,84 L 647,83 L 646,84 L 623,86 L 596,93 L 576,74 L 559,62 L 535,50 L 510,42 L 488,38 L 454,37 L 453,38 L 443,38 Z M 602,513 L 602,542 L 601,543 L 601,564 L 602,565 L 601,581 L 602,586 L 599,589 L 450,672 L 420,682 L 399,686 L 369,687 L 368,686 L 357,686 L 337,682 L 317,675 L 305,669 L 285,656 L 262,634 L 248,614 L 239,596 L 231,567 L 230,544 L 232,532 L 234,530 L 323,582 L 328,586 L 340,592 L 382,618 L 392,622 L 404,621 L 438,601 L 440,601 L 447,596 L 532,549 L 562,531 L 571,527 L 600,510 Z M 512,314 L 517,315 L 568,346 L 596,361 L 602,366 L 602,446 L 600,458 L 547,488 L 537,495 L 513,508 L 510,508 L 452,477 L 423,460 L 423,365 L 431,359 L 467,340 L 490,326 L 505,319 Z"
+        fill="url(#knotGradient)"
+        fill-rule="evenodd"/>
+</g>
+
+<g id="leftHand"
+   fill="url(#skinGradient)"
+   stroke="#050304"
+   stroke-width="13"
+   stroke-linejoin="round"
+   stroke-linecap="round">
+  <path class="finger left-top" d="M 128,156 L 125,161 L 122,170 L 122,185 L 127,202 L 134,215 L 147,233 L 169,255 L 180,264 L 244,307 L 268,320 L 276,322 L 279,324 L 292,327 L 301,327 L 302,328 L 317,327 L 332,321 L 341,312 L 343,307 L 343,297 L 339,289 L 328,278 L 304,261 L 279,240 L 246,206 L 216,168 L 198,151 L 184,143 L 175,140 L 157,139 L 146,142 L 140,145 Z"/>
+<path class="finger left-middle" d="M 51,297 L 50,307 L 49,308 L 49,315 L 50,316 L 51,326 L 53,329 L 54,334 L 62,348 L 73,360 L 82,367 L 99,376 L 113,381 L 116,381 L 135,387 L 139,387 L 148,390 L 181,396 L 186,398 L 191,398 L 192,399 L 197,399 L 198,400 L 215,402 L 222,404 L 239,405 L 240,406 L 251,406 L 252,407 L 297,407 L 298,406 L 306,406 L 307,405 L 321,403 L 338,396 L 344,390 L 347,385 L 347,376 L 345,372 L 336,364 L 317,358 L 310,357 L 306,355 L 287,351 L 266,344 L 255,342 L 244,338 L 236,337 L 218,332 L 214,332 L 190,325 L 175,318 L 173,318 L 152,307 L 113,280 L 102,274 L 93,271 L 77,271 L 67,275 L 58,283 Z"/>
+<path class="finger left-bottom" d="M 117,445 L 117,455 L 119,463 L 127,479 L 138,495 L 150,510 L 170,531 L 178,537 L 187,541 L 188,540 L 189,531 L 195,518 L 204,508 L 196,502 L 189,495 L 184,488 L 183,482 L 185,479 L 189,479 L 196,487 L 205,494 L 215,498 L 223,499 L 224,500 L 256,499 L 278,493 L 300,483 L 311,476 L 319,468 L 323,459 L 323,452 L 321,448 L 318,445 L 311,442 L 292,442 L 291,443 L 243,442 L 242,441 L 225,440 L 212,437 L 188,434 L 177,431 L 158,429 L 157,428 L 148,428 L 147,427 L 134,428 L 126,431 L 120,437 Z"/>
+</g>
+
+<g id="rightHand"
+   fill="url(#skinGradient)"
+   stroke="#050304"
+   stroke-width="13"
+   stroke-linejoin="round"
+   stroke-linecap="round">
+  <path class="finger right-top" d="M 904,153 L 896,146 L 888,142 L 880,140 L 865,140 L 857,142 L 838,152 L 818,171 L 795,200 L 757,239 L 733,259 L 706,278 L 693,289 L 688,298 L 688,307 L 692,315 L 700,322 L 706,325 L 717,328 L 739,328 L 752,325 L 766,320 L 787,309 L 846,270 L 869,251 L 884,236 L 898,218 L 905,206 L 905,204 L 909,197 L 912,185 L 912,170 L 910,163 Z"/>
+<path class="finger right-middle" d="M 981,294 L 975,283 L 969,277 L 963,273 L 951,270 L 937,272 L 920,280 L 874,311 L 844,325 L 820,333 L 785,341 L 781,343 L 777,343 L 773,345 L 754,349 L 742,353 L 738,353 L 717,359 L 709,360 L 697,364 L 689,369 L 684,377 L 684,385 L 686,389 L 693,396 L 705,402 L 722,406 L 740,407 L 741,408 L 775,408 L 776,407 L 802,406 L 803,405 L 810,405 L 811,404 L 829,402 L 864,393 L 868,393 L 886,388 L 890,388 L 906,384 L 920,379 L 923,379 L 947,368 L 956,362 L 964,355 L 973,344 L 980,331 L 983,320 L 984,309 L 983,308 L 983,301 L 981,297 Z"/>
+<path class="finger right-bottom" d="M 916,444 L 913,436 L 908,431 L 896,427 L 884,427 L 883,428 L 876,428 L 875,429 L 858,431 L 853,433 L 833,436 L 827,438 L 809,440 L 808,441 L 800,441 L 799,442 L 773,443 L 772,444 L 744,444 L 743,443 L 720,442 L 711,445 L 707,449 L 705,453 L 705,461 L 710,470 L 717,477 L 733,487 L 758,497 L 761,497 L 769,500 L 781,501 L 782,502 L 801,502 L 802,501 L 807,501 L 815,499 L 828,492 L 840,480 L 844,479 L 847,482 L 847,486 L 844,492 L 832,505 L 826,509 L 838,522 L 844,535 L 844,539 L 846,541 L 851,538 L 853,538 L 867,527 L 887,505 L 900,488 L 913,466 L 916,456 Z"/>
+</g>
+
+      </svg>
+    </div>
+
+    <div class="wordmark">KnotGPT<sup>™</sup></div>
+    <p class="tagline">untangle the thread</p>
+
+    <button
+      id="installButton"
+      class="install-button"
+      type="button"
+      hidden
+    >
+      Install App
+    </button>
+  </section>
+
+  <button class="replay" type="button" id="replay">Replay</button>
+</main>
+
+<script>
+  const replay = document.getElementById("replay");
+
+  replay.addEventListener("click", () => {
+    const oldStage = document.getElementById("stage");
+    const freshStage = oldStage.cloneNode(true);
+    oldStage.replaceWith(freshStage);
+  });
+
+  let installPrompt;
+
+  window.addEventListener("beforeinstallprompt", event => {
+    event.preventDefault();
+
+    installPrompt = event;
+
+    document
+      .getElementById("installButton")
+      .hidden = false;
+  });
+
+  document
+    .getElementById("installButton")
+    .addEventListener("click", async () => {
+      if (!installPrompt) return;
+
+      const result = await installPrompt.prompt();
+
+      console.log("Install result:", result.outcome);
+
+      installPrompt = null;
+
+      document
+        .getElementById("installButton")
+        .hidden = true;
+    });
+
+  window.addEventListener("appinstalled", () => {
+    installPrompt = null;
+
+    document
+      .getElementById("installButton")
+      .hidden = true;
+  });
+</script>
+</body>
+</html>
