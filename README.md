@@ -27,14 +27,7 @@ On a WebGPU-capable browser, opening the site automatically starts downloading *
 
 The repository remains a **buildless static site served from its root**. The existing `.github/workflows/static.yml` is retained unchanged: pushing these files to `main` triggers deployment as before. No backend, API key, bundler, npm install, or Pages reconfiguration is needed.
 
-To apply the supplied update archive through GitHub's website:
-
-1. Extract the archive.
-2. Open this repository's **Add file → Upload files** page.
-3. Upload the extracted files/folders to the repository root, replacing matching files, and commit to `main`.
-4. The existing Pages workflow deploys the update.
-
-For a local Git checkout, copy the archive contents into the root, review `git diff`, and commit/push to `main`. A `KnotGPT-update.patch` is also provided for `git apply` against commit `8200dcd757c57c753dc9bbd16f236c60b03fc679`.
+The original update bundle and its Git patch are retained in `archive/` for reference: `archive/KnotGPT-update.zip` and `archive/KnotGPT-update.patch`. The patch applies against commit `8200dcd757c57c753dc9bbd16f236c60b03fc679`.
 
 ## Development and verification
 
