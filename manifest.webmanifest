@@ -1,0 +1,12 @@
+{
+  "id": "./",
+  "name": "KnotGPT",
+  "short_name": "KnotGPT",
+  "description": "Untangle the thread. Local chat with Gemma 4.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4e8fb",
+  "theme_color": "#f4e8fb",
+  "icons": [{ "src": "./logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

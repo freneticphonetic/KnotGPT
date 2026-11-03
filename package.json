@@ -1,0 +1,9 @@
+{
+  "name": "knotgpt",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check app.js && node --check model-storage.js && node --check inference-worker.js && node --check chat-format.js && node --check sw.js"
+  }
+}

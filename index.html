@@ -3,7 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>KnotGPT — traced vector splash</title>
+<meta name="theme-color" content="#f4e8fb">
+<meta name="description" content="KnotGPT — untangle the thread with Gemma 4, running locally in your browser.">
+<link rel="icon" type="image/svg+xml" href="./logo.svg">
+<link rel="manifest" href="./manifest.webmanifest">
+<title>KnotGPT — untangle the thread</title>
 
 <style>
   :root {
@@ -277,10 +281,11 @@
     }
   }
 </style>
+<link rel="stylesheet" href="./chat.css">
 </head>
 
 <body>
-<main class="splash">
+<section class="splash" id="splash" aria-labelledby="load-title">
   <i class="spark one"></i>
   <i class="spark two"></i>
   <i class="spark three"></i>
@@ -362,63 +367,72 @@
     <div class="wordmark">KnotGPT<sup>™</sup></div>
     <p class="tagline">untangle the thread</p>
 
-    <button
-      id="installButton"
-      class="install-button"
-      type="button"
-      hidden
-    >
-      Install App
-    </button>
+    <div class="load-panel">
+      <h1 id="load-title">Your ideas. Your device.</h1>
+      <p id="load-description">Gemma 4 runs right here. The model loads automatically and is saved here for your next visit.</p>
+      <progress id="load-progress" max="100" value="0" aria-label="Model loading progress" hidden></progress>
+      <p id="load-status" role="status" aria-live="polite">Checking this browser…</p>
+      <p id="load-detail" class="load-detail"></p>
+      <div class="load-actions">
+        <button class="primary" id="load-button" type="button" hidden>Retry loading</button>
+        <button class="quiet" id="cancel-load" type="button" hidden>Pause download</button>
+        <button class="quiet" id="enter-chat" type="button">Open chat</button>
+      </div>
+    </div>
   </section>
+</section>
 
-  <button class="replay" type="button" id="replay">Replay</button>
+<main id="chat-app" class="chat-app" hidden>
+  <header class="app-header">
+    <a class="brand" href="./" aria-label="KnotGPT home"><img src="./logo.svg" alt="" width="48" height="40"><span>KnotGPT<sup>™</sup></span></a>
+    <div class="header-actions">
+      <button id="new-chat" class="quiet" type="button">New chat</button>
+      <button id="settings-button" class="icon-button" type="button" aria-label="Open settings" title="Settings">⚙</button>
+    </div>
+  </header>
+  <div class="model-bar"><span class="status-dot" id="status-dot"></span><span id="model-status" role="status">Gemma 4 E2B · not loaded</span><button id="show-loader" class="text-button" type="button">Load model</button></div>
+  <section class="chat-scroll" id="chat-scroll" aria-label="Conversation">
+    <div class="welcome" id="welcome">
+      <img src="./logo.svg" width="156" height="118" alt="Purple knot held by cartoon hands">
+      <p class="eyebrow">A LITTLE SPACE TO THINK</p>
+      <h1>What’s on your mind?</h1>
+      <p>Pull up a thread. Let’s see where it goes.</p>
+      <div class="suggestions">
+        <button type="button" data-prompt="Help me untangle an idea. Ask me one question to get started."><span>Untangle an idea</span><small>Find a place to begin ↗</small></button>
+        <button type="button" data-prompt="Help me write a scene. Ask me what happens in it."><span>Make something</span><small>Get the first words down ↗</small></button>
+        <button type="button" data-prompt="Help me understand a topic. Ask me what I am curious about."><span>Follow a curiosity</span><small>Take the scenic route ↗</small></button>
+      </div>
+    </div>
+    <div id="messages" class="messages" aria-label="Messages"></div>
+  </section>
+  <div class="composer-area">
+    <p id="chat-notice" class="chat-notice" role="status" hidden></p>
+    <form id="composer" class="composer">
+      <label class="sr-only" for="prompt">Message KnotGPT</label>
+      <textarea id="prompt" rows="1" placeholder="Untangle the thread…" maxlength="16000"></textarea>
+      <div class="composer-bottom"><span id="composer-hint">Messages stay in this browser.</span><button id="send" class="send-button" type="submit" disabled aria-label="Send message">↑</button><button id="stop" class="stop-button" type="button" hidden>Stop</button></div>
+    </form>
+    <p class="footer-note">Gemma 4 E2B · on your device <span>✧</span> <span id="offline-status">No account. No API key.</span></p>
+  </div>
 </main>
 
-<script>
-  const replay = document.getElementById("replay");
-
-  replay.addEventListener("click", () => {
-    const oldStage = document.getElementById("stage");
-    const freshStage = oldStage.cloneNode(true);
-    oldStage.replaceWith(freshStage);
-  });
-
-  let installPrompt;
-
-  window.addEventListener("beforeinstallprompt", event => {
-    event.preventDefault();
-
-    installPrompt = event;
-
-    document
-      .getElementById("installButton")
-      .hidden = false;
-  });
-
-  document
-    .getElementById("installButton")
-    .addEventListener("click", async () => {
-      if (!installPrompt) return;
-
-      const result = await installPrompt.prompt();
-
-      console.log("Install result:", result.outcome);
-
-      installPrompt = null;
-
-      document
-        .getElementById("installButton")
-        .hidden = true;
-    });
-
-  window.addEventListener("appinstalled", () => {
-    installPrompt = null;
-
-    document
-      .getElementById("installButton")
-      .hidden = true;
-  });
-</script>
+<dialog id="settings" aria-labelledby="settings-title">
+  <form method="dialog" class="settings-heading"><h2 id="settings-title">Make yourself at home</h2><button class="icon-button" aria-label="Close settings">×</button></form>
+  <label for="system-instructions">System instructions <span class="optional">optional</span></label>
+  <p class="field-help">Added before the conversation. Leave blank for no system instruction.</p>
+  <textarea id="system-instructions" rows="4" maxlength="4000" placeholder="How would you like KnotGPT to respond?"></textarea>
+  <button id="save-settings" type="button" class="primary">Save instructions</button>
+  <hr>
+  <p><strong>Gemma 4 E2B</strong><br><span class="field-help">Text model · 2.00 GB · WebGPU</span></p>
+  <p id="storage-status" class="field-help"></p>
+  <p class="field-help">The model is saved on this device. Chat history and instructions are saved only in this browser. The first setup fetches model and runtime files from Hugging Face and jsDelivr.</p>
+  <div class="settings-actions">
+    <button id="export-chat" type="button" class="quiet">Export chat</button>
+    <button id="delete-model" type="button" class="quiet danger">Remove model</button>
+    <button id="installButton" type="button" class="quiet" hidden>Install app</button>
+  </div>
+  <p class="field-help"><a href="https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm" target="_blank" rel="noopener noreferrer">Model &amp; license ↗</a> · <a href="https://github.com/freneticphonetic/KnotGPT" target="_blank" rel="noopener noreferrer">Source ↗</a></p>
+</dialog>
+<script type="module" src="./app.js"></script>
 </body>
 </html>
