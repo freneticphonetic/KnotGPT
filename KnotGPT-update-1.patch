@@ -1,0 +1,728 @@
+diff --git a/README.md b/README.md
+index 5a0001f..8df8529 100644
+--- a/README.md
++++ b/README.md
+@@ -15,14 +15,33 @@ On a WebGPU-capable browser, opening the site automatically starts downloading *
+ ## Chat
+ 
+ - Streaming local responses; inference and initialization run in a worker.
+-- Stop generation, start a new chat, copy responses, and export a conversation as JSON.
+-- The current conversation and optional system instructions are saved in browser `localStorage`. The model uses OPFS, which is appropriate for multi-GB files.
+-- Optional instructions are editable in Settings and blank by default. The app supplies only the Gemma 4 conversation template; it adds no default personality prompt.
++- Stop generation, start a new chat, copy responses, read a response aloud, and export a conversation as JSON.
++- New chat creates an in-app conversation without navigation. A collapsible **Your threads** sidebar indexes saved chats by their first message. Each chat retains its messages and unsent draft; the active chat returns on the next launch. The previous single-chat history migrates automatically, with its legacy copy retained.
++- Conversations, optional system instructions, reasoning effort and voice preference are saved in browser `localStorage`. The model uses OPFS, which is appropriate for multi-GB files.
++- Optional instructions are editable in Settings and blank by default. The app adds no default personality prompt. Enabling reasoning adds the disclosed reasoning guidance described below.
+ - Context is bounded to 2,048 total tokens, with 512 tokens reserved for output. When old exchanges no longer fit, they stay visible and saved; an inline notice says how many were omitted from the model's current context.
+ - Model text is rendered as plain text, not executed as HTML.
+ - Prompts, responses, and instructions are not sent to an inference server. External requests fetch the static site, model and runtime assets.
+ - Settings includes model removal and an install button when the browser makes app installation available.
+ 
++## Read-aloud
++
++The speaker icon beside Copy reads that response; tapping it again stops playback. Selecting another response cancels the previous one. Switching chats or leaving the page also stops speech. Long responses are spoken in consecutive chunks for browser compatibility.
++
++By default, the app leaves voice and language unset so the **current browser/device TTS engine chooses its default**. Settings offers the voices exposed by the browser as optional overrides, and remembers the selection. If a selected voice fails, playback tries the browser default and an available device voice. Voice lists refresh when the browser makes them available. No speech service or API key is added by KnotGPT. An online voice supplied by the browser may send the spoken text to its speech provider; device voices are labeled in the picker.
++
++## Reasoning effort
++
++The composer has **Off / Low / Medium / High**, saved immediately and restored on the next visit. Off preserves standard generation. The other levels insert Gemma 4's documented `<|think|>` control token and the following guidance alongside any user-written system instructions:
++
++| Level | Added guidance |
++| --- | --- |
++| Low | Keep your reasoning brief and focused before answering. |
++| Medium | Reason through the relevant steps before answering. |
++| High | Examine the problem carefully, check assumptions and verify your reasoning before answering. |
++
++These are prompt-guided effort levels, not a runtime API for fixed reasoning-token budgets. Thinking shares the existing 2,048-token context with the prompt and answer. Generated thought-channel text is excluded from visible responses and read-aloud; if thinking exhausts the available context without an answer, the app returns the request to the composer with an explanatory message.
++
+ ## Existing GitHub Pages deployment
+ 
+ The repository remains a **buildless static site served from its root**. The existing `.github/workflows/static.yml` is retained unchanged: pushing these files to `main` triggers deployment as before. No backend, API key, bundler, npm install, or Pages reconfiguration is needed.
+@@ -38,9 +57,9 @@ npm run check
+ npm test
+ ```
+ 
+-Checks use only Node's built-in test runner; no dependencies are installed. Tests cover Gemma 4 prompt formatting, context limits, cached loads, partial downloads, resumable range validation, storage failures and cross-tab locking.
++Checks use only Node's built-in test runner; no dependencies are installed. The 33 tests cover Gemma 4 prompt formatting, thinking controls and streaming boundaries, context limits, chat migration and restoration, speech defaults/fallback/cancellation/chunking, cached loads, partial downloads, resumable range validation, storage failures and cross-tab locking.
+ 
+-Visual checks cover the splash, chat screen, starter prompts, settings and unavailable-WebGPU state. Full model initialization, generation performance and offline GPU execution need a compatible HTTPS/localhost browser; the managed HTTP preview does not expose those capabilities.
++Alex has successfully initialized the model and generated a reply on her Android phone in the installed web app. This update also verifies chat switching, draft restoration, persisted reasoning selection and voice settings in browser UI checks. The managed HTTP preview cannot run GPU inference or exercise Android TTS; the new reasoning modes and actual device audio still need an on-device check.
+ 
+ ## Pinned assets
+ 
+diff --git a/app.js b/app.js
+index ae9f127..6ab2f26 100644
+--- a/app.js
++++ b/app.js
+@@ -2,7 +2,14 @@ import { MODEL } from './config.js';
+ import { cachedModel, downloadModel, removeModel, withModelLock } from './model-storage.js';
+ 
+ const $ = id => document.getElementById(id);
+-const HISTORY_KEY = 'knotgpt-chat-v1';
++import { createChat, chatTitle, loadChats, saveChats } from './chat-store.js';
++import { normalizeReasoning, REASONING_KEY } from './reasoning.js';
++import { ReadAloud, VOICE_KEY } from './speech.js';
++let chatState;
++let historyReadable = true;
++let reasoning = 'off';
++let voiceURI = '';
++const reader = new ReadAloud({ onChange: updateSpeechButtons, onError: text => notice(text) });
+ const INSTRUCTIONS_KEY = 'knotgpt-instructions-v1';
+ let messages = [];
+ let instructions = '';
+@@ -32,18 +39,100 @@ function updateControls() {
+   $('send').hidden = busy;
+   $('stop').hidden = !busy;
+   $('new-chat').disabled = busy;
++  $('sidebar-new-chat').disabled = busy;
++  $('reasoning-effort').disabled = busy;
++  document.querySelectorAll('[data-chat-id]').forEach(button => { button.disabled = busy; });
++  document.querySelectorAll('.read-aloud').forEach(button => { button.disabled = !reader.supported || !button.closest('article').querySelector('.message-body').textContent || busy && button.closest('article').querySelector('.message-body') === activeBody; });
+   $('save-settings').disabled = busy;
+   $('delete-model').disabled = busy || loading;
+   $('show-loader').hidden = ready;
+   $('show-loader').textContent = loading ? 'View progress' : 'Load model';
+ }
++function currentChat() { return chatState.chats.find(chat => chat.id === chatState.activeId); }
+ function saveHistory() {
+-  try {
+-    localStorage.setItem(HISTORY_KEY, JSON.stringify(messages));
+-  } catch {
++  if (!chatState || !historyReadable) return;
++  const chat = currentChat();
++  chat.messages = messages;
++  chat.draft = $('prompt').value;
++  chat.title = chatTitle(messages);
++  chat.updatedAt = Date.now();
++  try { saveChats(localStorage, chatState); }
++  catch {
+     storageFailed = true;
+     notice('Chat history could not be saved. You can still chat and export this conversation.');
+   }
++  renderChats();
++}
++function renderChats() {
++  $('chat-list').replaceChildren();
++  for (const chat of [...chatState.chats].sort((a, b) => b.updatedAt - a.updatedAt)) {
++    const button = document.createElement('button');
++    button.type = 'button'; button.className = 'saved-chat'; button.dataset.chatId = chat.id;
++    button.setAttribute('aria-current', chat.id === chatState.activeId ? 'true' : 'false');
++    button.disabled = busy;
++    const title = document.createElement('strong'); title.textContent = chat.title;
++    const detail = document.createElement('small');
++    detail.textContent = `${chat.messages.filter(m => m.role === 'assistant').length} replies · ${new Date(chat.updatedAt).toLocaleDateString()}`;
++    button.append(title, detail);
++    button.addEventListener('click', () => openChat(chat.id));
++    $('chat-list').append(button);
++  }
++}
++function setSidebar(open) {
++  $('chat-sidebar').hidden = !open;
++  $('chat-sidebar').inert = !open;
++  $('sidebar-backdrop').hidden = !open;
++  $('history-button').setAttribute('aria-expanded', String(open));
++  for (const child of $('chat-app').children) {
++    if (!['chat-sidebar', 'sidebar-backdrop'].includes(child.id)) child.inert = open;
++  }
++  if (open) $('close-sidebar').focus();
++  else $('history-button').focus();
++}
++function openChat(id) {
++  if (busy) return;
++  saveHistory();
++  reader.stop();
++  chatState.activeId = id;
++  const chat = currentChat();
++  messages = chat.messages;
++  $('messages').replaceChildren();
++  messages.forEach(addMessage);
++  $('welcome').hidden = messages.length > 0;
++  $('prompt').value = chat.draft;
++  notice();
++  resizePrompt();
++  saveHistory();
++  setSidebar(false);
++  scrollToBottom();
++  $('prompt').focus();
++}
++function newChat() {
++  if (busy) return;
++  saveHistory();
++  const chat = createChat();
++  chatState.chats.push(chat);
++  openChat(chat.id);
++}
++function updateSpeechButtons() {
++  document.querySelectorAll('.read-aloud').forEach(button => {
++    const speaking = reader.active === button;
++    button.innerHTML = speaking ? STOP_ICON : SPEAKER_ICON;
++    button.setAttribute('aria-label', speaking ? 'Stop reading' : 'Read response aloud');
++    button.title = speaking ? 'Stop reading' : 'Read aloud';
++    button.setAttribute('aria-pressed', String(speaking));
++  });
++}
++const SPEAKER_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M11 4 5 9H2v6h3l6 5zM15 8a6 6 0 0 1 0 8M18 4a11 11 0 0 1 0 16"/></svg>';
++const STOP_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>';
++const COPY_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg>';
++function populateVoices() {
++  const select = $('tts-voice');
++  select.replaceChildren(new Option('Browser / device default', ''));
++  for (const voice of reader.voices()) select.add(new Option(`${voice.name} (${voice.lang})${voice.localService ? ' · device' : ' · online'}`, voice.voiceURI));
++  if (voiceURI && ![...select.options].some(option => option.value === voiceURI)) select.add(new Option('Saved voice unavailable · using default', voiceURI));
++  select.value = voiceURI;
++  select.disabled = !reader.supported;
+ }
+ function scrollToBottom() {
+   const area = $('chat-scroll');
+@@ -69,15 +158,22 @@ function addMessage(message) {
+     actions.className = 'message-actions';
+     const copy = document.createElement('button');
+     copy.type = 'button';
+-    copy.textContent = 'Copy';
++    copy.innerHTML = COPY_ICON;
++    copy.setAttribute('aria-label', 'Copy response');
++    copy.title = 'Copy response';
+     copy.addEventListener('click', async () => {
+       try {
+         await navigator.clipboard.writeText(body.textContent);
+         copy.textContent = 'Copied';
+-        setTimeout(() => { copy.textContent = 'Copy'; }, 1800);
++        setTimeout(() => { copy.innerHTML = COPY_ICON; }, 1800);
+       } catch { notice('Copy is unavailable here. Select the response text to copy it.'); }
+     });
+-    actions.append(copy);
++    const speak = document.createElement('button');
++    speak.type = 'button'; speak.className = 'read-aloud'; speak.innerHTML = SPEAKER_ICON;
++    speak.setAttribute('aria-label', 'Read response aloud'); speak.title = 'Read aloud'; speak.setAttribute('aria-pressed', 'false');
++    speak.disabled = !reader.supported || !message.content;
++    speak.addEventListener('click', () => reader.toggle(speak, body.textContent, voiceURI));
++    actions.append(copy, speak);
+     article.append(actions);
+   }
+   $('messages').append(article);
+@@ -290,7 +386,7 @@ $('composer').addEventListener('submit', event => {
+   resizePrompt();
+   scrollToBottom();
+   modelStatus('Gemma 4 · thinking…', 'busy');
+-  worker.postMessage({ type: 'generate', messages: context, instructions });
++  worker.postMessage({ type: 'generate', messages: context, instructions, reasoning });
+   saveHistory();
+   updateControls();
+ });
+@@ -311,7 +407,7 @@ $('stop').addEventListener('click', () => {
+     updateControls();
+   }, 1800);
+ });
+-$('prompt').addEventListener('input', resizePrompt);
++$('prompt').addEventListener('input', () => { resizePrompt(); saveHistory(); });
+ $('prompt').addEventListener('keydown', event => {
+   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && matchMedia('(pointer:fine)').matches) {
+     event.preventDefault();
+@@ -322,20 +418,39 @@ $('load-button').addEventListener('click', startLoading);
+ $('cancel-load').addEventListener('click', () => loadController?.abort());
+ $('enter-chat').addEventListener('click', showChat);
+ $('show-loader').addEventListener('click', () => { showLoader(); startLoading(); });
+-$('new-chat').addEventListener('click', () => {
+-  if (busy || !confirm('Start a new chat? Export this conversation first if you want to keep it.')) return;
+-  messages = [];
+-  $('messages').replaceChildren();
+-  $('welcome').hidden = false;
+-  notice();
+-  saveHistory();
+-  $('prompt').focus();
++$('new-chat').addEventListener('click', newChat);
++$('sidebar-new-chat').addEventListener('click', newChat);
++$('history-button').addEventListener('click', () => setSidebar($('chat-sidebar').hidden));
++$('close-sidebar').addEventListener('click', () => setSidebar(false));
++$('sidebar-backdrop').addEventListener('click', () => setSidebar(false));
++document.addEventListener('keydown', event => {
++  if ($('chat-sidebar').hidden) return;
++  if (event.key === 'Escape') setSidebar(false);
++  if (event.key === 'Tab') {
++    const buttons = [...$('chat-sidebar').querySelectorAll('button:not(:disabled)')];
++    const first = buttons[0], last = buttons.at(-1);
++    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
++    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
++  }
++});
++$('reasoning-effort').addEventListener('change', () => {
++  reasoning = normalizeReasoning($('reasoning-effort').value);
++  try { localStorage.setItem(REASONING_KEY, reasoning); }
++  catch { notice('Reasoning effort applies now, but could not be saved.'); }
++});
++$('tts-voice').addEventListener('change', () => {
++  voiceURI = $('tts-voice').value;
++  reader.stop();
++  try { localStorage.setItem(VOICE_KEY, voiceURI); }
++  catch { notice('The voice applies now, but could not be saved.'); }
+ });
++reader.synth?.addEventListener('voiceschanged', populateVoices);
+ document.querySelectorAll('[data-prompt]').forEach(button => {
+-  button.addEventListener('click', () => { $('prompt').value = button.dataset.prompt; resizePrompt(); $('prompt').focus(); });
++  button.addEventListener('click', () => { $('prompt').value = button.dataset.prompt; resizePrompt(); saveHistory(); $('prompt').focus(); });
+ });
+ $('settings-button').addEventListener('click', async () => {
+   $('system-instructions').value = instructions;
++  populateVoices();
+   $('settings').showModal();
+   try {
+     const file = await cachedModel();
+@@ -352,7 +467,7 @@ $('save-settings').addEventListener('click', () => {
+   if (!storageFailed) notice('Instructions saved. They apply to your next message.');
+ });
+ $('export-chat').addEventListener('click', () => {
+-  const blob = new Blob([JSON.stringify({ app: 'KnotGPT', model: MODEL.name, instructions, messages }, null, 2)], { type: 'application/json' });
++  const blob = new Blob([JSON.stringify({ app: 'KnotGPT', model: MODEL.name, title: currentChat().title, reasoning, instructions, messages }, null, 2)], { type: 'application/json' });
+   const url = URL.createObjectURL(blob);
+   const link = document.createElement('a');
+   link.href = url; link.download = 'KnotGPT-chat.json'; link.click();
+@@ -377,20 +492,30 @@ $('installButton').addEventListener('click', async () => {
+   await installPrompt.prompt(); installPrompt = null; $('installButton').hidden = true;
+ });
+ window.addEventListener('appinstalled', () => { installPrompt = null; $('installButton').hidden = true; });
+-window.addEventListener('pagehide', () => { saveHistory(); loadController?.abort(); worker?.terminate(); });
++window.addEventListener('pagehide', () => { saveHistory(); reader.stop(); loadController?.abort(); worker?.terminate(); });
+ window.addEventListener('pageshow', event => {
+   if (event.persisted) { ready = false; loading = false; busy = false; showLoader(); startLoading(); }
+ });
+ 
+ try {
+-  const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+-  if (Array.isArray(saved)) {
+-    messages = saved.filter(message => ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string' && message.content.length > 0);
+-    // A closed tab may have saved a user turn before an answer arrived.
+-    if (messages.at(-1)?.role === 'user') $('prompt').value = messages.pop().content;
+-    messages.forEach(addMessage);
+-  }
++  chatState = loadChats(localStorage);
++} catch {
++  historyReadable = false;
++  const chat = createChat();
++  chatState = { version: 2, chats: [chat], activeId: chat.id };
++  notice('Saved chats could not be read. Existing storage has been left intact; export new conversations to keep them.');
++}
++try {
+   instructions = localStorage.getItem(INSTRUCTIONS_KEY) || '';
+-} catch { storageFailed = true; notice('Local chat history is unavailable. This conversation will work for this session.'); }
++  reasoning = normalizeReasoning(localStorage.getItem(REASONING_KEY));
++  voiceURI = localStorage.getItem(VOICE_KEY) || '';
++} catch { notice('Settings cannot be saved in this browser session.'); }
++messages = currentChat().messages;
++$('prompt').value = currentChat().draft;
++messages.forEach(addMessage);
++$('reasoning-effort').value = reasoning;
++populateVoices();
++renderChats();
++resizePrompt();
+ updateControls();
+ startLoading();
+diff --git a/chat-format.js b/chat-format.js
+index c101397..4e083bc 100644
+--- a/chat-format.js
++++ b/chat-format.js
+@@ -1,6 +1,9 @@
++import { reasoningSystem } from './reasoning.js';
+ // Gemma 4's documented template. There are no added personality instructions.
+-export function formatPrompt(messages, instructions = '') {
+-  let prompt = instructions ? `<|turn>system\n${escapeTokens(instructions)}<turn|>\n` : '';
++export function formatPrompt(messages, instructions = '', effort = 'off') {
++  const mode = reasoningSystem(instructions, effort);
++  const system = [mode.thinking ? '<|think|>' : '', mode.guidance, escapeTokens(instructions)].filter(Boolean).join('\n');
++  let prompt = system ? `<|turn>system\n${system}<turn|>\n` : '';
+   for (const message of messages) {
+     const role = message.role === 'assistant' ? 'model' : 'user';
+     prompt += `<|turn>${role}\n${escapeTokens(message.content)}<turn|>\n`;
+@@ -13,11 +16,11 @@ export function escapeTokens(text) {
+   return String(text).replace(/<\|/g, '<\u200b|').replace(/<turn\|>/g, '<turn\u200b|>');
+ }
+ 
+-export function fitContext(messages, instructions, countTokens, budget) {
++export function fitContext(messages, instructions, countTokens, budget, effort = 'off') {
+   const context = messages.slice();
+   let dropped = 0;
+   while (true) {
+-    const prompt = formatPrompt(context, instructions);
++    const prompt = formatPrompt(context, instructions, effort);
+     const tokens = countTokens(prompt);
+     if (!Number.isFinite(tokens)) throw new Error('The model could not measure the conversation length. Reload the model.');
+     if (tokens <= budget) return { prompt, dropped, tokens };
+@@ -33,7 +36,14 @@ export function fitContext(messages, instructions, countTokens, budget) {
+ }
+ 
+ export function cleanResponse(text) {
+-  return text.replace(/<\|channel>thought[\s\S]*?<channel\|>/g, '')
++  let visible = text.replace(/<\|channel>thought[\s\S]*?<channel\|>/g, '')
+     .replace(/<\|channel>thought[\s\S]*$/g, '')
+-    .replace(/<turn\|>|<\|turn>model\n?/g, '').trim();
++    .replace(/<turn\|>|<\|turn>model\n?/g, '');
++  // Streaming may stop anywhere inside a control marker or the thought label.
++  const start = visible.lastIndexOf('<');
++  if (start >= 0) {
++    const tail = visible.slice(start);
++    if (['<|channel>thought', '<turn|>', '<|turn>model'].some(marker => marker.startsWith(tail))) visible = visible.slice(0, start);
++  }
++  return visible.trim();
+ }
+diff --git a/chat-store.js b/chat-store.js
+new file mode 100644
+index 0000000..caf1814
+--- /dev/null
++++ b/chat-store.js
+@@ -0,0 +1,36 @@
++export const CHATS_KEY = 'knotgpt-chats-v2';
++export const LEGACY_KEY = 'knotgpt-chat-v1';
++const validMessages = value => Array.isArray(value) ? value.filter(m => ['user', 'assistant'].includes(m?.role) && typeof m.content === 'string' && m.content.length).map(m => ({ role: m.role, content: m.content, ...(m.stopped ? { stopped: true } : {}) })) : [];
++export function createChat() {
++  return { id: globalThis.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`, title: 'New chat', messages: [], draft: '', updatedAt: Date.now() };
++}
++export function chatTitle(messages) {
++  return messages.find(m => m.role === 'user')?.content.replace(/\s+/g, ' ').trim().slice(0, 64) || 'New chat';
++}
++export function loadChats(storage) {
++  const raw = storage.getItem(CHATS_KEY);
++  if (raw !== null) {
++    const saved = JSON.parse(raw);
++    if (saved?.version !== 2 || !Array.isArray(saved.chats)) throw new Error('Saved chats could not be read.');
++    const seen = new Set();
++    const chats = saved.chats.filter(c => typeof c?.id === 'string' && !seen.has(c.id) && seen.add(c.id)).map(c => ({
++      id: c.id, messages: validMessages(c.messages), draft: typeof c.draft === 'string' ? c.draft : '',
++      title: typeof c.title === 'string' ? c.title : chatTitle(validMessages(c.messages)),
++      updatedAt: Number.isFinite(c.updatedAt) ? c.updatedAt : Date.now(),
++    }));
++    if (!chats.length) chats.push(createChat());
++    for (const chat of chats) {
++      if (chat.messages.at(-1)?.role === 'user') chat.draft = chat.messages.pop().content;
++    }
++    return { version: 2, chats, activeId: chats.some(c => c.id === saved.activeId) ? saved.activeId : chats[0].id };
++  }
++  const chat = createChat();
++  chat.messages = validMessages(JSON.parse(storage.getItem(LEGACY_KEY) || '[]'));
++  if (chat.messages.at(-1)?.role === 'user') chat.draft = chat.messages.pop().content;
++  chat.title = chatTitle(chat.messages);
++  return { version: 2, chats: [chat], activeId: chat.id };
++}
++export function saveChats(storage, state) {
++  // One atomic setItem keeps the active index and its conversations together.
++  storage.setItem(CHATS_KEY, JSON.stringify(state));
++}
+diff --git a/chat.css b/chat.css
+index c3ebe6a..04e3db4 100644
+--- a/chat.css
++++ b/chat.css
+@@ -75,3 +75,15 @@ dialog hr{border:0;border-top:1px solid var(--line);margin:24px 0}.settings-acti
+ @media(max-width:560px){.app-header{padding:12px 16px 6px}.brand{font-size:22px}.brand img{width:40px}.chat-scroll{padding:10px 16px 18px}.welcome{margin:30px auto 16px}.welcome>img{width:126px;height:96px}.suggestions{grid-template-columns:1fr;gap:8px;margin-top:24px}.suggestions button{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 15px}.suggestions small{margin:0;font-size:10px}.composer-area{padding-left:12px;padding-right:12px}.message{font-size:15px}.load-panel h1{font-size:18px}.logo-shell{width:min(60vw,270px)}.stage{gap:6px}.load-panel{margin-top:4px}.tagline{margin-bottom:4px}}
+ @media(max-height:640px){.splash{padding:12px 16px}.logo-shell{width:180px}.wordmark{font-size:40px}.tagline{font-size:13px}.load-panel{margin-top:0}.load-panel p{margin:4px 0;font-size:12px}.load-panel h1{font-size:16px}.load-actions{margin-top:8px}.welcome{margin-top:10px}}
+ @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.wordmark,.tagline{opacity:1;transform:none}}
++.header-brand{display:flex;align-items:center;gap:10px;min-width:0}
++.message-actions button{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:6px;border-radius:8px}
++.message-actions button[aria-pressed=true]{color:var(--purple);background:var(--accent)}
++.chat-sidebar{position:fixed;z-index:31;inset:0 auto 0 0;width:min(320px,86vw);background:var(--paper);border-right:1px solid var(--line);box-shadow:10px 0 50px #32103d20;padding:20px;display:flex;flex-direction:column;gap:16px;overflow-y:auto;padding-top:max(20px,env(safe-area-inset-top));padding-bottom:max(20px,env(safe-area-inset-bottom))}
++.sidebar-heading{display:flex;align-items:center;justify-content:space-between}.sidebar-heading h2{margin:0;font-size:22px;letter-spacing:-.04em}
++#sidebar-backdrop{position:fixed;inset:0;z-index:30;background:#23112e66;border:0;backdrop-filter:blur(3px)}
++#chat-list{display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;min-height:80px}
++.saved-chat{text-align:left;padding:13px;border:1px solid transparent;border-radius:13px;background:transparent;color:var(--ink);flex-shrink:0}.saved-chat:hover{background:#f1e5f8}.saved-chat[aria-current=true]{background:var(--accent);border-color:#cda8df}.saved-chat strong{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.saved-chat small{display:block;margin-top:6px;color:var(--muted);font-size:11px}
++.reasoning-control{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);margin:0 4px 8px;position:relative}.reasoning-control select{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:5px 8px}.reasoning-control details{margin-left:auto}.reasoning-control summary{cursor:pointer;font-size:16px;list-style:none}.reasoning-control details p{position:absolute;bottom:25px;right:0;width:min(310px,78vw);padding:14px;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 4px 20px #32103d20;font-size:12px;line-height:1.6;z-index:5}
++#tts-voice{display:block;width:100%;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--paper);color:var(--ink);font:14px system-ui}
++select:focus-visible,summary:focus-visible{outline:3px solid #a855ce;outline-offset:3px}
++@media(max-width:560px){.app-header{gap:6px;padding-left:12px;padding-right:12px}.header-brand{gap:5px}.brand{font-size:20px;gap:4px}.brand img{width:30px}.header-actions{gap:5px}.header-actions .quiet{padding:10px;font-size:12px}.icon-button{width:34px;height:36px;flex-shrink:0}}
+diff --git a/index.html b/index.html
+index 974aef2..d189f84 100644
+--- a/index.html
++++ b/index.html
+@@ -383,8 +383,15 @@
+ </section>
+ 
+ <main id="chat-app" class="chat-app" hidden>
++  <button id="sidebar-backdrop" type="button" aria-label="Close saved chats" hidden></button>
++  <aside id="chat-sidebar" class="chat-sidebar" aria-label="Saved chats" hidden inert>
++    <div class="sidebar-heading"><h2>Your threads</h2><button id="close-sidebar" class="icon-button" type="button" aria-label="Close saved chats">×</button></div>
++    <button id="sidebar-new-chat" class="primary" type="button">＋ New chat</button>
++    <nav id="chat-list" aria-label="Saved conversations"></nav>
++    <p class="field-help">Saved only in this browser.</p>
++  </aside>
+   <header class="app-header">
+-    <a class="brand" href="./" aria-label="KnotGPT home"><img src="./logo.svg" alt="" width="48" height="40"><span>KnotGPT<sup>™</sup></span></a>
++    <div class="header-brand"><button id="history-button" class="icon-button" type="button" aria-label="Show saved chats" title="Saved chats" aria-controls="chat-sidebar" aria-expanded="false">☰</button><span class="brand"><img src="./logo.svg" alt="" width="48" height="40"><span>KnotGPT<sup>™</sup></span></span></div>
+     <div class="header-actions">
+       <button id="new-chat" class="quiet" type="button">New chat</button>
+       <button id="settings-button" class="icon-button" type="button" aria-label="Open settings" title="Settings">⚙</button>
+@@ -407,6 +414,7 @@
+   </section>
+   <div class="composer-area">
+     <p id="chat-notice" class="chat-notice" role="status" hidden></p>
++    <div class="reasoning-control"><label for="reasoning-effort">Reasoning effort</label><select id="reasoning-effort" aria-describedby="reasoning-help"><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select><details><summary aria-label="About reasoning effort">ⓘ</summary><p id="reasoning-help">Off uses standard generation. Low, Medium and High enable Gemma thinking and add brief, stepwise or careful-checking guidance respectively. These are prompt-guided levels, not fixed token budgets. Your choice is saved for next time; the 2,048-token context limit still applies.</p></details></div>
+     <form id="composer" class="composer">
+       <label class="sr-only" for="prompt">Message KnotGPT</label>
+       <textarea id="prompt" rows="1" placeholder="Untangle the thread…" maxlength="16000"></textarea>
+@@ -423,6 +431,10 @@
+   <textarea id="system-instructions" rows="4" maxlength="4000" placeholder="How would you like KnotGPT to respond?"></textarea>
+   <button id="save-settings" type="button" class="primary">Save instructions</button>
+   <hr>
++  <label for="tts-voice">Read-aloud voice</label>
++  <select id="tts-voice"><option value="">Browser / device default</option></select>
++  <p class="field-help">Uses your current browser’s default text-to-speech engine and voice. You can optionally select another voice available on this device or in this browser. Online voices may send response text to their speech provider. Your selection is saved automatically.</p>
++  <hr>
+   <p><strong>Gemma 4 E2B</strong><br><span class="field-help">Text model · 2.00 GB · WebGPU</span></p>
+   <p id="storage-status" class="field-help"></p>
+   <p class="field-help">The model is saved on this device. Chat history and instructions are saved only in this browser. The first setup fetches model and runtime files from Hugging Face and jsDelivr.</p>
+diff --git a/inference-worker.js b/inference-worker.js
+index d75d544..77fe2e7 100644
+--- a/inference-worker.js
++++ b/inference-worker.js
+@@ -32,14 +32,16 @@ self.addEventListener('message', async ({ data }) => {
+       stopRequested = false;
+       const { fitContext, cleanResponse } = await import('./chat-format.js');
+       const context = fitContext(data.messages, data.instructions,
+-        prompt => engine.sizeInTokens(prompt), MAX_TOKENS - OUTPUT_RESERVE);
++        prompt => engine.sizeInTokens(prompt), MAX_TOKENS - OUTPUT_RESERVE, data.reasoning);
+       self.postMessage({ type: 'context', dropped: context.dropped });
+       let raw = '';
+       const final = await engine.generateResponse(context.prompt, chunk => {
+         raw += chunk;
+         self.postMessage({ type: 'token', text: cleanResponse(raw) });
+       });
+-      self.postMessage({ type: 'done', text: cleanResponse(final || raw), stopped: stopRequested });
++      const answer = cleanResponse(final || raw);
++      if (!answer && raw.includes('<|channel>thought') && !stopRequested) throw new Error('Thinking used the available context before an answer was produced. Try a lower effort or a shorter message.');
++      self.postMessage({ type: 'done', text: answer, stopped: stopRequested });
+     }
+   } catch (error) {
+     self.postMessage({ type: 'error', action: data.type, message: error?.message || String(error) });
+diff --git a/package.json b/package.json
+index 4965978..cd8a032 100644
+--- a/package.json
++++ b/package.json
+@@ -4,6 +4,6 @@
+   "type": "module",
+   "scripts": {
+     "test": "node --test tests/*.test.js",
+-    "check": "node --check app.js && node --check model-storage.js && node --check inference-worker.js && node --check chat-format.js && node --check sw.js"
++    "check": "node --check app.js && node --check model-storage.js && node --check inference-worker.js && node --check chat-format.js && node --check sw.js && node --check chat-store.js && node --check reasoning.js && node --check speech.js"
+   }
+ }
+diff --git a/reasoning.js b/reasoning.js
+new file mode 100644
+index 0000000..f07cd4d
+--- /dev/null
++++ b/reasoning.js
+@@ -0,0 +1,14 @@
++export const REASONING_KEY = 'knotgpt-reasoning-v1';
++export const REASONING_LEVELS = Object.freeze({
++  off: '',
++  low: 'Keep your reasoning brief and focused before answering.',
++  medium: 'Reason through the relevant steps before answering.',
++  high: 'Examine the problem carefully, check assumptions and verify your reasoning before answering.',
++});
++export function normalizeReasoning(value) {
++  return Object.hasOwn(REASONING_LEVELS, value) ? value : 'off';
++}
++export function reasoningSystem(instructions, effort) {
++  const level = normalizeReasoning(effort);
++  return { thinking: level !== 'off', guidance: REASONING_LEVELS[level], instructions };
++}
+diff --git a/speech.js b/speech.js
+new file mode 100644
+index 0000000..1b214e1
+--- /dev/null
++++ b/speech.js
+@@ -0,0 +1,70 @@
++export const VOICE_KEY = 'knotgpt-voice-v1';
++export function speechChunks(text, limit = 220) {
++  const chunks = [];
++  let rest = text.trim();
++  while (rest.length) {
++    if (rest.length <= limit) { chunks.push(rest); break; }
++    const window = rest.slice(0, limit);
++    const sentence = [...window.matchAll(/[.!?。！？](?:\s|$)/gu)].at(-1);
++    let end = sentence ? sentence.index + sentence[0].length : window.lastIndexOf(' ');
++    if (end < limit / 3) end = limit;
++    // Do not split a UTF-16 surrogate pair.
++    if (/[\uD800-\uDBFF]/.test(rest[end - 1])) end--;
++    chunks.push(rest.slice(0, end).trim());
++    rest = rest.slice(end).trimStart();
++  }
++  return chunks;
++}
++export class ReadAloud {
++  constructor({ synth = globalThis.speechSynthesis, Utterance = globalThis.SpeechSynthesisUtterance, onChange = () => {}, onError = () => {} } = {}) {
++    Object.assign(this, { synth, Utterance, onChange, onError });
++    this.serial = 0;
++    this.active = null;
++  }
++  get supported() { return !!this.synth && !!this.Utterance; }
++  voices() { return this.synth?.getVoices() || []; }
++  stop() {
++    this.serial++;
++    this.active = null;
++    this.utterance = null;
++    this.synth?.cancel();
++    this.onChange(null);
++  }
++  toggle(id, text, voiceURI = '') {
++    const wasActive = this.active === id;
++    this.stop();
++    if (wasActive) return;
++    if (!this.supported) { this.onError('Read-aloud is unavailable in this browser.'); return; }
++    const chunks = speechChunks(text);
++    if (!chunks.length) return;
++    const serial = this.serial;
++    this.active = id;
++    this.onChange(id);
++    const selected = this.voices().find(v => v.voiceURI === voiceURI);
++    const local = this.voices().find(v => v.localService && v.lang === (selected?.lang || globalThis.navigator?.language)) || this.voices().find(v => v.localService);
++    const candidates = [...new Set([selected, undefined, local])];
++    let index = 0;
++    const speak = (attempt = 0) => {
++      if (serial !== this.serial) return;
++      const utterance = new this.Utterance(chunks[index]);
++      const voice = candidates[attempt];
++      if (voice) { utterance.voice = voice; utterance.lang = voice.lang; }
++      // With no explicit voice/lang, let the current browser/device choose its default.
++      this.utterance = utterance;
++      utterance.onend = () => {
++        if (serial !== this.serial) return;
++        if (++index < chunks.length) speak();
++        else { this.active = null; this.utterance = null; this.onChange(null); }
++      };
++      utterance.onerror = event => {
++        if (serial !== this.serial) return;
++        if (attempt + 1 < candidates.length) { speak(attempt + 1); return; }
++        this.stop();
++        this.onError(`Read-aloud could not start (${event.error || 'voice unavailable'}). Try another voice in Settings.`);
++      };
++      try { this.synth.speak(utterance); }
++      catch (error) { utterance.onerror({ error: error.message }); }
++    };
++    speak();
++  }
++}
+diff --git a/sw.js b/sw.js
+index 669a4bc..08f785c 100644
+--- a/sw.js
++++ b/sw.js
+@@ -1,6 +1,6 @@
+-const SHELL_CACHE = 'knotgpt-shell-v1';
++const SHELL_CACHE = 'knotgpt-shell-v2';
+ const RUNTIME_CACHE = 'knotgpt-runtime-0.10.30';
+-const SHELL = ['./', './index.html', './chat.css', './app.js', './config.js', './model-storage.js', './chat-format.js', './inference-worker.js', './logo.svg', './manifest.webmanifest'];
++const SHELL = ['./', './index.html', './chat.css', './app.js', './config.js', './model-storage.js', './chat-format.js', './chat-store.js', './reasoning.js', './speech.js', './inference-worker.js', './logo.svg', './manifest.webmanifest'];
+ self.addEventListener('install', event => {
+   event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+ });
+diff --git a/tests/chat-format.test.js b/tests/chat-format.test.js
+index ea46704..5cde85a 100644
+--- a/tests/chat-format.test.js
++++ b/tests/chat-format.test.js
+@@ -30,3 +30,23 @@ test('partial thought markers do not appear in the visible response', () => {
+   assert.equal(cleanResponse('<|channel>thought\nWorking'), '');
+   assert.equal(cleanResponse('<|channel>thought\nWorking<channel|>Hello<turn|>'), 'Hello');
+ });
++test('all effort levels enable the documented thinking token with visible guidance', () => {
++  for (const level of ['low','medium','high']) {
++    const prompt=formatPrompt([{role:'user',content:'Why?'}],'My instruction',level);
++    assert.equal((prompt.match(/<\|think\|>/g)||[]).length,1);
++    assert.equal((prompt.match(/<\|turn>system/g)||[]).length,1);
++    assert.ok(prompt.includes('My instruction'));
++  }
++  assert.ok(!formatPrompt([], '', 'off').includes('<|think|>'));
++  assert.ok(!formatPrompt([], '', 'bogus').includes('<|think|>'));
++});
++test('reasoning guidance is included when measuring the context budget', () => {
++  let measured;const result=fitContext([{role:'user',content:'Hello'}],'',p=>{measured=p;return p.length;},1000,'high');
++  assert.ok(measured.includes('<|think|>'));assert.equal(result.prompt,measured);
++});
++test('thought control tokens remain hidden at every streaming boundary', () => {
++  const thought='<|channel>thought\nPrivate reasoning<channel|>';
++  for(let i=1;i<=thought.length;i++) assert.equal(cleanResponse(thought.slice(0,i)),'');
++  assert.equal(cleanResponse(thought+'Answer'),'Answer');
++  assert.equal(cleanResponse('Hello<turn|'),'Hello');
++});
+diff --git a/tests/chat-store.test.js b/tests/chat-store.test.js
+new file mode 100644
+index 0000000..309dd67
+--- /dev/null
++++ b/tests/chat-store.test.js
+@@ -0,0 +1,33 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { loadChats, saveChats, createChat, CHATS_KEY, LEGACY_KEY } from '../chat-store.js';
++const storage = entries => { const map = new Map(entries); return { getItem: k => map.get(k) ?? null, setItem: (k, v) => map.set(k, v) }; };
++test('migrates the existing conversation without overwriting its legacy backup', () => {
++  const messages = [{role:'user',content:'Hello'}, {role:'assistant',content:'Hi'}];
++  const db = storage([[LEGACY_KEY, JSON.stringify(messages)]]);
++  const state = loadChats(db); saveChats(db,state);
++  assert.deepEqual(state.chats[0].messages,messages);
++  assert.equal(state.chats[0].title,'Hello');
++  assert.equal(db.getItem(LEGACY_KEY),JSON.stringify(messages));
++});
++test('multiple indexed chats, active selection and drafts survive a reload', () => {
++  const db = storage([]), state = loadChats(db);
++  const first = state.chats[0]; first.messages = [{role:'user',content:'One'}, {role:'assistant',content:'First answer'}];
++  const second = createChat(); second.draft = 'Unsent idea'; state.chats.push(second); state.activeId = second.id;
++  saveChats(db,state);
++  const restored = loadChats(db);
++  assert.equal(restored.activeId,second.id); assert.equal(restored.chats.length,2);
++  assert.equal(restored.chats[0].messages[1].content,'First answer'); assert.equal(restored.chats[1].draft,'Unsent idea');
++});
++test('interrupted unanswered requests return to their own chat composer', () => {
++  const db=storage([]), state=loadChats(db);
++  state.chats[0].messages=[{role:'user',content:'Retry me'}, {role:'assistant',content:''}];saveChats(db,state);
++  const chat=loadChats(db).chats[0];assert.equal(chat.draft,'Retry me');assert.equal(chat.messages.length,0);
++});
++test('damaged saved history throws without modifying stored data', () => {
++  const db=storage([[CHATS_KEY,'broken JSON']]);assert.throws(()=>loadChats(db));assert.equal(db.getItem(CHATS_KEY),'broken JSON');
++});
++test('missing active id recovers an existing conversation', () => {
++  const db=storage([]), state=loadChats(db);state.activeId='missing';saveChats(db,state);
++  assert.equal(loadChats(db).activeId,state.chats[0].id);
++});
+diff --git a/tests/speech.test.js b/tests/speech.test.js
+new file mode 100644
+index 0000000..7e8fce5
+--- /dev/null
++++ b/tests/speech.test.js
+@@ -0,0 +1,43 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { ReadAloud, speechChunks } from '../speech.js';
++function fixture(voices=[]) {
++  const queue=[];let cancels=0;const changes=[],errors=[];
++  class Utterance { constructor(text) {this.text=text;} }
++  const reader=new ReadAloud({synth:{getVoices:()=>voices,cancel:()=>cancels++,speak:u=>queue.push(u)},Utterance,onChange:id=>changes.push(id),onError:e=>errors.push(e)});
++  return {reader,queue,changes,errors,cancels:()=>cancels};
++}
++test('default reading leaves voice and language selection to the browser',()=>{
++  const f=fixture();f.reader.toggle('a','Hello');assert.equal(f.queue[0].voice,undefined);assert.equal(f.queue[0].lang,undefined);
++  f.queue[0].onend();assert.equal(f.reader.active,null);
++});
++test('a saved voice is used, with default then local fallback on failure',()=>{
++  const selected={voiceURI:'edge',lang:'en-US'},local={voiceURI:'device',lang:'en-US',localService:true};
++  const f=fixture([selected,local]);f.reader.toggle('a','Hello','edge');assert.equal(f.queue[0].voice,selected);
++  f.queue[0].onerror({error:'network'});assert.equal(f.queue[1].voice,undefined);
++  f.queue[1].onerror({error:'network'});assert.equal(f.queue[2].voice,local);
++});
++test('repeated tap stops reading and stale events cannot restart it',()=>{
++  const f=fixture();f.reader.toggle('a','Long response. '.repeat(40));const old=f.queue[0];f.reader.toggle('a','Again');
++  old.onend();assert.equal(f.queue.length,1);assert.equal(f.reader.active,null);
++});
++test('switching responses cancels the previous utterance',()=>{
++  const f=fixture();f.reader.toggle('a','First');f.reader.toggle('b','Second');f.queue[0].onend();
++  assert.equal(f.reader.active,'b');assert.equal(f.queue.length,2);assert.equal(f.queue[1].text,'Second');
++});
++test('long responses advance chunk by chunk without dropping text',()=>{
++  const f=fixture(), text='A sentence with several words. '.repeat(80).trim();f.reader.toggle('a',text);
++  for(let i=0;i<f.queue.length;i++) f.queue[i].onend();
++  assert.equal(f.queue.map(u=>u.text).join(' '),text);assert.equal(f.reader.active,null);
++});
++test('speech failure resets controls and reports an actionable error',()=>{
++  const f=fixture();f.reader.toggle('a','Hello');f.queue[0].onerror({error:'not-allowed'});
++  assert.equal(f.reader.active,null);assert.match(f.errors[0],/Settings/);
++});
++test('unsupported browsers report unavailable speech',()=>{
++  let error;const r=new ReadAloud({synth:null,Utterance:null,onError:e=>error=e});r.toggle('a','Hello');assert.match(error,/unavailable/);
++});
++test('chunk boundaries preserve emoji surrogate pairs',()=>{
++  const text='😀'.repeat(300);const chunks=speechChunks(text,221);assert.equal(chunks.join(''),text);
++  assert.ok(chunks.every(c=>!/[\uD800-\uDBFF]$/.test(c)));
++});
