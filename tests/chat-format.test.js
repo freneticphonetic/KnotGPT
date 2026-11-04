@@ -30,3 +30,23 @@ test('partial thought markers do not appear in the visible response', () => {
   assert.equal(cleanResponse('<|channel>thought\nWorking'), '');
   assert.equal(cleanResponse('<|channel>thought\nWorking<channel|>Hello<turn|>'), 'Hello');
 });
+test('all effort levels enable the documented thinking token with visible guidance', () => {
+  for (const level of ['low','medium','high']) {
+    const prompt=formatPrompt([{role:'user',content:'Why?'}],'My instruction',level);
+    assert.equal((prompt.match(/<\|think\|>/g)||[]).length,1);
+    assert.equal((prompt.match(/<\|turn>system/g)||[]).length,1);
+    assert.ok(prompt.includes('My instruction'));
+  }
+  assert.ok(!formatPrompt([], '', 'off').includes('<|think|>'));
+  assert.ok(!formatPrompt([], '', 'bogus').includes('<|think|>'));
+});
+test('reasoning guidance is included when measuring the context budget', () => {
+  let measured;const result=fitContext([{role:'user',content:'Hello'}],'',p=>{measured=p;return p.length;},1000,'high');
+  assert.ok(measured.includes('<|think|>'));assert.equal(result.prompt,measured);
+});
+test('thought control tokens remain hidden at every streaming boundary', () => {
+  const thought='<|channel>thought\nPrivate reasoning<channel|>';
+  for(let i=1;i<=thought.length;i++) assert.equal(cleanResponse(thought.slice(0,i)),'');
+  assert.equal(cleanResponse(thought+'Answer'),'Answer');
+  assert.equal(cleanResponse('Hello<turn|'),'Hello');
+});

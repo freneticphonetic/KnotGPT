@@ -32,14 +32,16 @@ self.addEventListener('message', async ({ data }) => {
       stopRequested = false;
       const { fitContext, cleanResponse } = await import('./chat-format.js');
       const context = fitContext(data.messages, data.instructions,
-        prompt => engine.sizeInTokens(prompt), MAX_TOKENS - OUTPUT_RESERVE);
+        prompt => engine.sizeInTokens(prompt), MAX_TOKENS - OUTPUT_RESERVE, data.reasoning);
       self.postMessage({ type: 'context', dropped: context.dropped });
       let raw = '';
       const final = await engine.generateResponse(context.prompt, chunk => {
         raw += chunk;
         self.postMessage({ type: 'token', text: cleanResponse(raw) });
       });
-      self.postMessage({ type: 'done', text: cleanResponse(final || raw), stopped: stopRequested });
+      const answer = cleanResponse(final || raw);
+      if (!answer && raw.includes('<|channel>thought') && !stopRequested) throw new Error('Thinking used the available context before an answer was produced. Try a lower effort or a shorter message.');
+      self.postMessage({ type: 'done', text: answer, stopped: stopRequested });
     }
   } catch (error) {
     self.postMessage({ type: 'error', action: data.type, message: error?.message || String(error) });

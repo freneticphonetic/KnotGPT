@@ -1,6 +1,6 @@
-const SHELL_CACHE = 'knotgpt-shell-v1';
+const SHELL_CACHE = 'knotgpt-shell-v2';
 const RUNTIME_CACHE = 'knotgpt-runtime-0.10.30';
-const SHELL = ['./', './index.html', './chat.css', './app.js', './config.js', './model-storage.js', './chat-format.js', './inference-worker.js', './logo.svg', './manifest.webmanifest'];
+const SHELL = ['./', './index.html', './chat.css', './app.js', './config.js', './model-storage.js', './chat-format.js', './chat-store.js', './reasoning.js', './speech.js', './inference-worker.js', './logo.svg', './manifest.webmanifest'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });

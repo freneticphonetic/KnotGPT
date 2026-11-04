@@ -383,8 +383,15 @@
 </section>
 
 <main id="chat-app" class="chat-app" hidden>
+  <button id="sidebar-backdrop" type="button" aria-label="Close saved chats" hidden></button>
+  <aside id="chat-sidebar" class="chat-sidebar" aria-label="Saved chats" hidden inert>
+    <div class="sidebar-heading"><h2>Your threads</h2><button id="close-sidebar" class="icon-button" type="button" aria-label="Close saved chats">×</button></div>
+    <button id="sidebar-new-chat" class="primary" type="button">＋ New chat</button>
+    <nav id="chat-list" aria-label="Saved conversations"></nav>
+    <p class="field-help">Saved only in this browser.</p>
+  </aside>
   <header class="app-header">
-    <a class="brand" href="./" aria-label="KnotGPT home"><img src="./logo.svg" alt="" width="48" height="40"><span>KnotGPT<sup>™</sup></span></a>
+    <div class="header-brand"><button id="history-button" class="icon-button" type="button" aria-label="Show saved chats" title="Saved chats" aria-controls="chat-sidebar" aria-expanded="false">☰</button><span class="brand"><img src="./logo.svg" alt="" width="48" height="40"><span>KnotGPT<sup>™</sup></span></span></div>
     <div class="header-actions">
       <button id="new-chat" class="quiet" type="button">New chat</button>
       <button id="settings-button" class="icon-button" type="button" aria-label="Open settings" title="Settings">⚙</button>
@@ -407,6 +414,7 @@
   </section>
   <div class="composer-area">
     <p id="chat-notice" class="chat-notice" role="status" hidden></p>
+    <div class="reasoning-control"><label for="reasoning-effort">Reasoning effort</label><select id="reasoning-effort" aria-describedby="reasoning-help"><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select><details><summary aria-label="About reasoning effort">ⓘ</summary><p id="reasoning-help">Off uses standard generation. Low, Medium and High enable Gemma thinking and add brief, stepwise or careful-checking guidance respectively. These are prompt-guided levels, not fixed token budgets. Your choice is saved for next time; the 2,048-token context limit still applies.</p></details></div>
     <form id="composer" class="composer">
       <label class="sr-only" for="prompt">Message KnotGPT</label>
       <textarea id="prompt" rows="1" placeholder="Untangle the thread…" maxlength="16000"></textarea>
@@ -422,6 +430,10 @@
   <p class="field-help">Added before the conversation. Leave blank for no system instruction.</p>
   <textarea id="system-instructions" rows="4" maxlength="4000" placeholder="How would you like KnotGPT to respond?"></textarea>
   <button id="save-settings" type="button" class="primary">Save instructions</button>
+  <hr>
+  <label for="tts-voice">Read-aloud voice</label>
+  <select id="tts-voice"><option value="">Browser / device default</option></select>
+  <p class="field-help">Uses your current browser’s default text-to-speech engine and voice. You can optionally select another voice available on this device or in this browser. Online voices may send response text to their speech provider. Your selection is saved automatically.</p>
   <hr>
   <p><strong>Gemma 4 E2B</strong><br><span class="field-help">Text model · 2.00 GB · WebGPU</span></p>
   <p id="storage-status" class="field-help"></p>

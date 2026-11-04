@@ -2,7 +2,14 @@ import { MODEL } from './config.js';
 import { cachedModel, downloadModel, removeModel, withModelLock } from './model-storage.js';
 
 const $ = id => document.getElementById(id);
-const HISTORY_KEY = 'knotgpt-chat-v1';
+import { createChat, chatTitle, loadChats, saveChats } from './chat-store.js';
+import { normalizeReasoning, REASONING_KEY } from './reasoning.js';
+import { ReadAloud, VOICE_KEY } from './speech.js';
+let chatState;
+let historyReadable = true;
+let reasoning = 'off';
+let voiceURI = '';
+const reader = new ReadAloud({ onChange: updateSpeechButtons, onError: text => notice(text) });
 const INSTRUCTIONS_KEY = 'knotgpt-instructions-v1';
 let messages = [];
 let instructions = '';
@@ -32,18 +39,100 @@ function updateControls() {
   $('send').hidden = busy;
   $('stop').hidden = !busy;
   $('new-chat').disabled = busy;
+  $('sidebar-new-chat').disabled = busy;
+  $('reasoning-effort').disabled = busy;
+  document.querySelectorAll('[data-chat-id]').forEach(button => { button.disabled = busy; });
+  document.querySelectorAll('.read-aloud').forEach(button => { button.disabled = !reader.supported || !button.closest('article').querySelector('.message-body').textContent || busy && button.closest('article').querySelector('.message-body') === activeBody; });
   $('save-settings').disabled = busy;
   $('delete-model').disabled = busy || loading;
   $('show-loader').hidden = ready;
   $('show-loader').textContent = loading ? 'View progress' : 'Load model';
 }
+function currentChat() { return chatState.chats.find(chat => chat.id === chatState.activeId); }
 function saveHistory() {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(messages));
-  } catch {
+  if (!chatState || !historyReadable) return;
+  const chat = currentChat();
+  chat.messages = messages;
+  chat.draft = $('prompt').value;
+  chat.title = chatTitle(messages);
+  chat.updatedAt = Date.now();
+  try { saveChats(localStorage, chatState); }
+  catch {
     storageFailed = true;
     notice('Chat history could not be saved. You can still chat and export this conversation.');
   }
+  renderChats();
+}
+function renderChats() {
+  $('chat-list').replaceChildren();
+  for (const chat of [...chatState.chats].sort((a, b) => b.updatedAt - a.updatedAt)) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'saved-chat'; button.dataset.chatId = chat.id;
+    button.setAttribute('aria-current', chat.id === chatState.activeId ? 'true' : 'false');
+    button.disabled = busy;
+    const title = document.createElement('strong'); title.textContent = chat.title;
+    const detail = document.createElement('small');
+    detail.textContent = `${chat.messages.filter(m => m.role === 'assistant').length} replies · ${new Date(chat.updatedAt).toLocaleDateString()}`;
+    button.append(title, detail);
+    button.addEventListener('click', () => openChat(chat.id));
+    $('chat-list').append(button);
+  }
+}
+function setSidebar(open) {
+  $('chat-sidebar').hidden = !open;
+  $('chat-sidebar').inert = !open;
+  $('sidebar-backdrop').hidden = !open;
+  $('history-button').setAttribute('aria-expanded', String(open));
+  for (const child of $('chat-app').children) {
+    if (!['chat-sidebar', 'sidebar-backdrop'].includes(child.id)) child.inert = open;
+  }
+  if (open) $('close-sidebar').focus();
+  else $('history-button').focus();
+}
+function openChat(id) {
+  if (busy) return;
+  saveHistory();
+  reader.stop();
+  chatState.activeId = id;
+  const chat = currentChat();
+  messages = chat.messages;
+  $('messages').replaceChildren();
+  messages.forEach(addMessage);
+  $('welcome').hidden = messages.length > 0;
+  $('prompt').value = chat.draft;
+  notice();
+  resizePrompt();
+  saveHistory();
+  setSidebar(false);
+  scrollToBottom();
+  $('prompt').focus();
+}
+function newChat() {
+  if (busy) return;
+  saveHistory();
+  const chat = createChat();
+  chatState.chats.push(chat);
+  openChat(chat.id);
+}
+function updateSpeechButtons() {
+  document.querySelectorAll('.read-aloud').forEach(button => {
+    const speaking = reader.active === button;
+    button.innerHTML = speaking ? STOP_ICON : SPEAKER_ICON;
+    button.setAttribute('aria-label', speaking ? 'Stop reading' : 'Read response aloud');
+    button.title = speaking ? 'Stop reading' : 'Read aloud';
+    button.setAttribute('aria-pressed', String(speaking));
+  });
+}
+const SPEAKER_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M11 4 5 9H2v6h3l6 5zM15 8a6 6 0 0 1 0 8M18 4a11 11 0 0 1 0 16"/></svg>';
+const STOP_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>';
+const COPY_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></svg>';
+function populateVoices() {
+  const select = $('tts-voice');
+  select.replaceChildren(new Option('Browser / device default', ''));
+  for (const voice of reader.voices()) select.add(new Option(`${voice.name} (${voice.lang})${voice.localService ? ' · device' : ' · online'}`, voice.voiceURI));
+  if (voiceURI && ![...select.options].some(option => option.value === voiceURI)) select.add(new Option('Saved voice unavailable · using default', voiceURI));
+  select.value = voiceURI;
+  select.disabled = !reader.supported;
 }
 function scrollToBottom() {
   const area = $('chat-scroll');
@@ -69,15 +158,22 @@ function addMessage(message) {
     actions.className = 'message-actions';
     const copy = document.createElement('button');
     copy.type = 'button';
-    copy.textContent = 'Copy';
+    copy.innerHTML = COPY_ICON;
+    copy.setAttribute('aria-label', 'Copy response');
+    copy.title = 'Copy response';
     copy.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(body.textContent);
         copy.textContent = 'Copied';
-        setTimeout(() => { copy.textContent = 'Copy'; }, 1800);
+        setTimeout(() => { copy.innerHTML = COPY_ICON; }, 1800);
       } catch { notice('Copy is unavailable here. Select the response text to copy it.'); }
     });
-    actions.append(copy);
+    const speak = document.createElement('button');
+    speak.type = 'button'; speak.className = 'read-aloud'; speak.innerHTML = SPEAKER_ICON;
+    speak.setAttribute('aria-label', 'Read response aloud'); speak.title = 'Read aloud'; speak.setAttribute('aria-pressed', 'false');
+    speak.disabled = !reader.supported || !message.content;
+    speak.addEventListener('click', () => reader.toggle(speak, body.textContent, voiceURI));
+    actions.append(copy, speak);
     article.append(actions);
   }
   $('messages').append(article);
@@ -290,7 +386,7 @@ $('composer').addEventListener('submit', event => {
   resizePrompt();
   scrollToBottom();
   modelStatus('Gemma 4 · thinking…', 'busy');
-  worker.postMessage({ type: 'generate', messages: context, instructions });
+  worker.postMessage({ type: 'generate', messages: context, instructions, reasoning });
   saveHistory();
   updateControls();
 });
@@ -311,7 +407,7 @@ $('stop').addEventListener('click', () => {
     updateControls();
   }, 1800);
 });
-$('prompt').addEventListener('input', resizePrompt);
+$('prompt').addEventListener('input', () => { resizePrompt(); saveHistory(); });
 $('prompt').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && matchMedia('(pointer:fine)').matches) {
     event.preventDefault();
@@ -322,20 +418,39 @@ $('load-button').addEventListener('click', startLoading);
 $('cancel-load').addEventListener('click', () => loadController?.abort());
 $('enter-chat').addEventListener('click', showChat);
 $('show-loader').addEventListener('click', () => { showLoader(); startLoading(); });
-$('new-chat').addEventListener('click', () => {
-  if (busy || !confirm('Start a new chat? Export this conversation first if you want to keep it.')) return;
-  messages = [];
-  $('messages').replaceChildren();
-  $('welcome').hidden = false;
-  notice();
-  saveHistory();
-  $('prompt').focus();
+$('new-chat').addEventListener('click', newChat);
+$('sidebar-new-chat').addEventListener('click', newChat);
+$('history-button').addEventListener('click', () => setSidebar($('chat-sidebar').hidden));
+$('close-sidebar').addEventListener('click', () => setSidebar(false));
+$('sidebar-backdrop').addEventListener('click', () => setSidebar(false));
+document.addEventListener('keydown', event => {
+  if ($('chat-sidebar').hidden) return;
+  if (event.key === 'Escape') setSidebar(false);
+  if (event.key === 'Tab') {
+    const buttons = [...$('chat-sidebar').querySelectorAll('button:not(:disabled)')];
+    const first = buttons[0], last = buttons.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
 });
+$('reasoning-effort').addEventListener('change', () => {
+  reasoning = normalizeReasoning($('reasoning-effort').value);
+  try { localStorage.setItem(REASONING_KEY, reasoning); }
+  catch { notice('Reasoning effort applies now, but could not be saved.'); }
+});
+$('tts-voice').addEventListener('change', () => {
+  voiceURI = $('tts-voice').value;
+  reader.stop();
+  try { localStorage.setItem(VOICE_KEY, voiceURI); }
+  catch { notice('The voice applies now, but could not be saved.'); }
+});
+reader.synth?.addEventListener('voiceschanged', populateVoices);
 document.querySelectorAll('[data-prompt]').forEach(button => {
-  button.addEventListener('click', () => { $('prompt').value = button.dataset.prompt; resizePrompt(); $('prompt').focus(); });
+  button.addEventListener('click', () => { $('prompt').value = button.dataset.prompt; resizePrompt(); saveHistory(); $('prompt').focus(); });
 });
 $('settings-button').addEventListener('click', async () => {
   $('system-instructions').value = instructions;
+  populateVoices();
   $('settings').showModal();
   try {
     const file = await cachedModel();
@@ -352,7 +467,7 @@ $('save-settings').addEventListener('click', () => {
   if (!storageFailed) notice('Instructions saved. They apply to your next message.');
 });
 $('export-chat').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({ app: 'KnotGPT', model: MODEL.name, instructions, messages }, null, 2)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ app: 'KnotGPT', model: MODEL.name, title: currentChat().title, reasoning, instructions, messages }, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url; link.download = 'KnotGPT-chat.json'; link.click();
@@ -377,20 +492,30 @@ $('installButton').addEventListener('click', async () => {
   await installPrompt.prompt(); installPrompt = null; $('installButton').hidden = true;
 });
 window.addEventListener('appinstalled', () => { installPrompt = null; $('installButton').hidden = true; });
-window.addEventListener('pagehide', () => { saveHistory(); loadController?.abort(); worker?.terminate(); });
+window.addEventListener('pagehide', () => { saveHistory(); reader.stop(); loadController?.abort(); worker?.terminate(); });
 window.addEventListener('pageshow', event => {
   if (event.persisted) { ready = false; loading = false; busy = false; showLoader(); startLoading(); }
 });
 
 try {
-  const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-  if (Array.isArray(saved)) {
-    messages = saved.filter(message => ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string' && message.content.length > 0);
-    // A closed tab may have saved a user turn before an answer arrived.
-    if (messages.at(-1)?.role === 'user') $('prompt').value = messages.pop().content;
-    messages.forEach(addMessage);
-  }
+  chatState = loadChats(localStorage);
+} catch {
+  historyReadable = false;
+  const chat = createChat();
+  chatState = { version: 2, chats: [chat], activeId: chat.id };
+  notice('Saved chats could not be read. Existing storage has been left intact; export new conversations to keep them.');
+}
+try {
   instructions = localStorage.getItem(INSTRUCTIONS_KEY) || '';
-} catch { storageFailed = true; notice('Local chat history is unavailable. This conversation will work for this session.'); }
+  reasoning = normalizeReasoning(localStorage.getItem(REASONING_KEY));
+  voiceURI = localStorage.getItem(VOICE_KEY) || '';
+} catch { notice('Settings cannot be saved in this browser session.'); }
+messages = currentChat().messages;
+$('prompt').value = currentChat().draft;
+messages.forEach(addMessage);
+$('reasoning-effort').value = reasoning;
+populateVoices();
+renderChats();
+resizePrompt();
 updateControls();
 startLoading();
